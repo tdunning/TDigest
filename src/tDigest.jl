@@ -90,7 +90,7 @@ struct MergingDigest{T, K}
 end
 
 function MergingDigest(compression) 
-    MergingDigest(compression, K_3)
+    MergingDigest(compression, K_3())
 end
 
 function MergingDigest(compression, scale::ScaleFunction) 
@@ -98,7 +98,7 @@ function MergingDigest(compression, scale::ScaleFunction)
 end
 
 function MergingDigest{T,K}(compression) where {T, K} 
-    MergingDigest{T, K}(compression, K_3)
+    MergingDigest{T, K}(compression, K_3())
 end
 
 function MergingDigest{T,K}(compression, scale::ScaleFunction) where {T, K} 
@@ -116,22 +116,6 @@ function MergingDigest{T,K}(compression, maxPending, useTwoLevelCompression, sca
         compression = sqrt(maxSize / (2*compression)) * compression
     end
     MergingDigest{T, K}(publicCompression, compression, scale, maxSize, false)
-end
-
-# translations between q and k scales
-function k_scale(digest::MergingDigest, q::Number, private=true)
-    compression = private ? digest.privateCompression : digest.publicCompression
-    k_scale(digest.scale, q, compression, length(digest))
-end
-
-function q_scale(digest::MergingDigest, k::Number, private=true) 
-    compression = private ? digest.privateCompression : digest.publicCompression
-    q_scale(digest.scale, k, compression, length(digest))
-end
-    
-function normalizer(digest::MergingDigest, private=true)
-    compression = private ? digest.privateCompression : digest.publicCompression
-    normalizer(digest.scale, compression, length(digest))
 end
 
 function max_step(digest::MergingDigest, q::Number, private=true)
@@ -200,19 +184,19 @@ function mergeNewValues!(digest::MergingDigest, force::Bool, compression)
         # now pass through the data merging clusters where possible
         # but start partway in because we won't merge the first cluster
         total = digest.totalWeight[1]
-        norm = normalizer(digest)
+        norm = normalizer(digest.scale, compression, total)
 
         length(digest.sketch) ≥ 2 || throw(AssertionError("Impossible")) 
 
         # w_so_far is total count up to and including `sketch[to]`
         # k0 is the scale up to but not including `sketch[to]`
         w_so_far = digest.sketch[1].count
-        k0 = digest.scale.qn_to_k(w_so_far / total, norm)
+        k0 = q_scale(digest.scale, w_so_far / total, norm)
         w_so_far += digest.sketch[2].count
         to = 2
         from = 3
         # the limiting weight is computed by finding a diff of 1 in scale 
-        limit = total * digest.scale.kn_to_q(k0 + 1, norm)
+        limit = total * k_scale(digest.scale, k0 + 1, norm)
         while from <= length(digest.sketch)
             from > to || throw(AssertionError("from ≤ to"))
             
@@ -220,8 +204,8 @@ function mergeNewValues!(digest::MergingDigest, force::Bool, compression)
             if w_so_far + dw > limit || from == length(digest.sketch)
                 # can't merge due to size or due to forcing singleton at end
                 to += 1
-                k0 = digest.scale.qn_to_k(w_so_far / total, norm)
-                limit = total * digest.scale.kn_to_q(k0 + 1, norm)
+                k0 = q_scale(digest.scale, w_so_far / total, norm)
+                limit = total * k_scale(digest.scale, k0 + 1, norm)
 
                 if to < from
                     digest.sketch[to] = digest.sketch[from]
@@ -274,16 +258,16 @@ function checkWeights(digest::MergingDigest)
         @error "debug" tmp[1] tmp[end]
 
     scale = digest.scale
-    norm = normalizer(digest)
+    norm = normalizer(digest.scale, digest.privateCompression, digest.totalWeight[1])
     q1 = 0
-    k1 = scale.qn_to_k(q1, norm)
+    k1 = k_scale(scale, q1, norm)
     
     
     i = 0
     for c in tmp
         i += 1
         q2 = q1 + c.count
-        k2 = scale.qn_to_k(q2, norm)
+        k2 = k_scale(scale, q2, norm)
 
         c.count == 1 || k2 - k1 ≤ 1 || begin
             @show tmp[max(1, i-3):min(end, i+3)]
@@ -306,145 +290,114 @@ compress(digest::MergingDigest) = mergeNewValues(digest, true, digest.publicComp
 
 Base.length(digest::MergingDigest) = length(digest.sketch)
          
+md"""
+Approximate the value of the empirical CDF at a value of `x`.
 """
-    @Override
-    public double cdf(double x) {
-        if (Double.isNaN(x) || Double.isInfinite(x)) {
-            throw new IllegalArgumentException(String.format("Invalid value: %f", x));
-        }
-        mergeNewValues();
+function cdf(digest::MergingDigest, x)
+    if isnan(x) || isinf(x)
+        throw(ArgumentError("Invalid value: $x"))
+    end
+    mergeNewValues(digest, true, digest.privateCompression)
 
-        if (lastUsedCell == 0) {
-            # no data to examine
-            return Double.NaN;
-        } else if (lastUsedCell == 1) {
-            # exactly one centroid, should have max==min
-            double width = max - min;
-            if (x < min) {
-                return 0;
-            } else if (x > max) {
-                return 1;
-            } else if (x - min <= width) {
-                # min and max are too close together to do any viable interpolation
-                return 0.5;
-            } else {
-                # interpolate if somehow we have weight > 0 and max != min
-                return (x - min) / (max - min);
-            }
-        } else {
-            int n = lastUsedCell;
-            if (x < min) {
-                return 0;
-            }
+    if length(digest) == 0
+        # no data to examine
+        return NaN
+    elseif length(digest) == 1
+        # exactly one centroid, should have max==min
+        v = digest.sketch[1].center
+        if x < v
+            return 0
+        elseif x > v
+            return 1
+        else
+            return 0.5
+        end
+    else
+        n = length(digest)
+        min, max = first(digest.sketch), last(digest.sketch)
+        total = digest.totalWeight[1]
+        
+        if x < min
+            return 0
+        elseif x == min
+            return 0.5 / total
+        end
 
-            if (x > max) {
-                return 1;
-            }
+        if x > max
+            return 1
+        elseif x == max
+            return 1 - 0.5 / total
+        end
+        min < x < max || throw(AssertionError("Can't happen"))
 
-            # check for the left tail
-            if (x < mean[0]) {
-                # note that this is different than mean[0] > min
-                # ... this guarantees we divide by non-zero number and interpolation works
-                if (mean[0] - min > 0) {
-                    # must be a sample exactly at min
-                    if (x == min) {
-                        return 0.5 / totalWeight;
-                    } else {
-                        return (1 + (x - min) / (mean[0] - min) * (weight[0] / 2 - 1)) / totalWeight;
-                    }
-                } else {
-                    # this should be redundant with the check x < min
-                    return 0;
-                }
-            }
-            assert x >= mean[0];
+        # we know that there are at least two centroids and mean[0] < x < mean[n-1]
+        # that means that there are either one or more consecutive centroids all at x
+        # or there are consecutive centroids, c0 < x < c1
+        weightSoFar = 0
+        n = length(digest)
+        for i in 1:n
+            c1 = digest.sketch[i]
+            c2 = digest.sketch[i + 1]
+            if x == c.mean
+                dw = 0
+                while i < n && digest.sketch[i].mean == x
+                    dw += digest.sketch[i].count
+                    i += 1
+                end
+                return (weightSoFar + dw/2) / total
+            elseif c1.mean ≤ x < c2.mean
+                # landed between centroids ... check for floating point madness
+                if c2.mean - c1.mean > 0
+                    # note how we handle singleton centroids here
+                    # the point is that for singleton centroids, we know that their entire
+                    # weight is exactly at the centroid and thus shouldn't be involved in
+                    # interpolation
+                    leftExcludedW = 0
+                    rightExcludedW = 0
+                    if c1.count == 1
+                        if c2.count == 1
+                            # two singletons means no interpolation
+                            # left singleton is in, right is out
+                            return (weightSoFar + 1) / totalWeight
+                        else
+                            leftExcludedW = 0.5
+                        end
+                    elseif c2.count == 1
+                        rightExcludedW = 0.5
+                    end
+                    dw = (c1.count + c2.count) / 2
 
-            # and the right tail
-            if (x > mean[n - 1]) {
-                if (max - mean[n - 1] > 0) {
-                    if (x == max) {
-                        return 1 - 0.5 / totalWeight;
-                    } else {
-                        # there has to be a single sample exactly at max
-                        double dq = (1 + (max - x) / (max - mean[n - 1]) * (weight[n - 1] / 2 - 1)) / totalWeight;
-                        return 1 - dq;
-                    }
-                } else {
-                    return 1;
-                }
-            }
+                    # can't have double singleton (handled that earlier)
+                    dw > 1 || throw(AssertionError("Can't have double singleton"))
+                    (leftExcludedW + rightExcludedW) <= 0.5 || 
+                        throw(AssertionError("Can't have double singleton"))
 
-            # we know that there are at least two centroids and mean[0] < x < mean[n-1]
-            # that means that there are either one or more consecutive centroids all at exactly x
-            # or there are consecutive centroids, c0 < x < c1
-            double weightSoFar = 0;
-            for (int it = 0; it < n - 1; it++) {
-                # weightSoFar does not include weight[it] yet
-                if (mean[it] == x) {
-                    # we have one or more centroids == x, treat them as one
-                    # dw will accumulate the weight of all of the centroids at x
-                    double dw = 0;
-                    while (it < n && mean[it] == x) {
-                        dw += weight[it];
-                        it++;
-                    }
-                    return (weightSoFar + dw / 2) / totalWeight;
-                } else if (mean[it] <= x && x < mean[it + 1]) {
-                    # landed between centroids ... check for floating point madness
-                    if (mean[it + 1] - mean[it] > 0) {
-                        # note how we handle singleton centroids here
-                        # the point is that for singleton centroids, we know that their entire
-                        # weight is exactly at the centroid and thus shouldn't be involved in
-                        # interpolation
-                        double leftExcludedW = 0;
-                        double rightExcludedW = 0;
-                        if (weight[it] == 1) {
-                            if (weight[it + 1] == 1) {
-                                # two singletons means no interpolation
-                                # left singleton is in, right is out
-                                return (weightSoFar + 1) / totalWeight;
-                            } else {
-                                leftExcludedW = 0.5;
-                            }
-                        } else if (weight[it + 1] == 1) {
-                            rightExcludedW = 0.5;
-                        }
-                        double dw = (weight[it] + weight[it + 1]) / 2;
+                    # adjust endpoints for any singleton
+                    left = c1.mean
+                    right = c2.mean
 
-                        # can't have double singleton (handled that earlier)
-                        assert dw > 1;
-                        assert (leftExcludedW + rightExcludedW) <= 0.5;
+                    dwNoSingleton = dw - leftExcludedW - rightExcludedW
 
-                        # adjust endpoints for any singleton
-                        double left = mean[it];
-                        double right = mean[it + 1];
+                    # adjustments have only limited effect on endpoints
+                    dwNoSingleton > dw / 2 || throw(AssertionError("Can't have excess effect of singletons"))
 
-                        double dwNoSingleton = dw - leftExcludedW - rightExcludedW;
-
-                        # adjustments have only limited effect on endpoints
-                        assert dwNoSingleton > dw / 2;
-                        assert right - left > 0;
-                        double base = weightSoFar + weight[it] / 2 + leftExcludedW;
-                        return (base + dwNoSingleton * (x - left) / (right - left)) / totalWeight;
-                    } else {
-                        # this is simply caution against floating point madness
-                        # it is conceivable that the centroids will be different
-                        # but too near to allow safe interpolation
-                        double dw = (weight[it] + weight[it + 1]) / 2;
-                        return (weightSoFar + dw) / totalWeight;
-                    }
-                } else {
-                    weightSoFar += weight[it];
-                }
-            }
-            if (x == mean[n - 1]) {
-                return 1 - 0.5 / totalWeight;
-            } else {
-                throw new IllegalStateException("Can't happen ... loop fell through");
-            }
-        }
-    }
-
+                    base = weightSoFar + c1.count / 2 + leftExcludedW
+                    return (base + dwNoSingleton * (x - left) / (right - left)) / totalWeight
+                else
+                    # this is simply caution against floating point madness
+                    # it is conceivable that the centroids will be different
+                    # but too near to allow safe interpolation
+                    dw = (weight[it] + weight[it + 1]) / 2
+                    return (weightSoFar + dw) / totalWeight
+                end
+            else
+                weightSoFar += weight[it];
+            end
+        end
+        throw(AssertionError("Can't happen ... loop fell through"))
+    end
+end
+"""
     @Override
     public double quantile(double q) {
         if (q < 0 || q > 1) {

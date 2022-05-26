@@ -1,8 +1,8 @@
 scales = Dict(
-    "K_0"=> (tDigest.K_0, 1e-15),
-    "K_1"=> (tDigest.K_1, 2e-5),
-    "K_2"=> (tDigest.K_2, 1e-12),
-    "K_3"=> (tDigest.K_3, 1e-11)
+    "K_0"=> (tDigest.K_0(), 1e-15),
+    "K_1"=> (tDigest.K_1(), 2e-5),
+    "K_2"=> (tDigest.K_2(), 1e-12),
+    "K_3"=> (tDigest.K_3(), 1e-11)
 )
 
 for (name, s) in scales
