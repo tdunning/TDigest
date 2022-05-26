@@ -123,25 +123,32 @@ function max_step(digest::MergingDigest, q::Number, private=true)
     max_step(digest.scale, q, compression, length(digest))
 end    
 
-fit!(digest::MergingDigest, vals::AbstractVector) =
-    for x in vals
-        fit!(digest, x)
+function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:T}) where {T, K}
+    if any(isnan.(vals))
+        throw(ArgumentError("Cannot add NaN to t-digest"))
     end
-
+    append!(digest.sketch, [Centroid{T, K}(x, 1) for x in vals])
+    digest.totalWeight[1] += length(vals)
+    if digest.logData
+        append!(digest.log, [[x] for x in vals])
+    end
+    if length(digest) > digest.maxSize
+        mergeNewValues!(digest, false, digest.privateCompression)
+    end
+end
 
 function fit!(digest::MergingDigest{T, K}, x) where {T, K}
     if isnan(x)
         throw(ArgumentError("Cannot add NaN to t-digest"))
     end
-    if length(digest.sketch) > digest.maxSize
-        mergeNewValues!(digest, false, digest.privateCompression)
-    end
     push!(digest.sketch, Centroid{T, K}(x, 1))
+    digest.totalWeight[1] += 1
     if digest.logData
         push!(digest.log, [x])
     end
-    
-    digest.totalWeight[1] += 1
+    if length(digest) > digest.maxSize
+        mergeNewValues!(digest, false, digest.privateCompression)
+    end
 end
 
 function merge!(digest::MergingDigest, other::MergingDigest)
@@ -191,12 +198,12 @@ function mergeNewValues!(digest::MergingDigest, force::Bool, compression)
         # w_so_far is total count up to and including `sketch[to]`
         # k0 is the scale up to but not including `sketch[to]`
         w_so_far = digest.sketch[1].count
-        k0 = q_scale(digest.scale, w_so_far / total, norm)
+        k0 = k_scale(digest.scale, w_so_far / total, norm)
         w_so_far += digest.sketch[2].count
         to = 2
         from = 3
         # the limiting weight is computed by finding a diff of 1 in scale 
-        limit = total * k_scale(digest.scale, k0 + 1, norm)
+        limit = total * q_scale(digest.scale, k0 + 1, norm)
         while from <= length(digest.sketch)
             from > to || throw(AssertionError("from ≤ to"))
             
@@ -204,8 +211,8 @@ function mergeNewValues!(digest::MergingDigest, force::Bool, compression)
             if w_so_far + dw > limit || from == length(digest.sketch)
                 # can't merge due to size or due to forcing singleton at end
                 to += 1
-                k0 = q_scale(digest.scale, w_so_far / total, norm)
-                limit = total * k_scale(digest.scale, k0 + 1, norm)
+                k0 = k_scale(digest.scale, w_so_far / total, norm)
+                limit = total * q_scale(digest.scale, k0 + 1, norm)
 
                 if to < from
                     digest.sketch[to] = digest.sketch[from]
@@ -225,7 +232,7 @@ function mergeNewValues!(digest::MergingDigest, force::Bool, compression)
             w_so_far += dw
         end
         resize!(digest.sketch, to)
-        length(digest.sketch) < 2 * compression ||
+        length(digest.sketch) < compression ||
             @error "Merging was ineffective" digest.sketch
     end
 end

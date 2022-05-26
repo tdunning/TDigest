@@ -1,3 +1,5 @@
+using CSV, DataFrames
+
 # check the bounding evaluator used in the scale functions
 let domain = randn(100),
     range = Vector(),
@@ -67,3 +69,12 @@ for (name, s) in scales
     d2k = diff(diff(k))
 end
     
+@info "Check scale function against data reference"
+ref = CSV.read("ref.csv", DataFrame, comment="#")
+for row in eachrow(ref)
+    q = row[:q]
+    for (name, s) in scales
+        scale, _ = s
+        @test tDigest.k_scale(scale, q, 100, 10_000) ≈ row[name] atol = 1e-5
+    end
+end
