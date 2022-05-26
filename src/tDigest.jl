@@ -123,7 +123,7 @@ function max_step(digest::MergingDigest, q::Number, private=true)
     max_step(digest.scale, q, compression, length(digest))
 end    
 
-function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:T}) where {T, K}
+function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where {T, K}
     if any(isnan.(vals))
         throw(ArgumentError("Cannot add NaN to t-digest"))
     end
@@ -304,7 +304,7 @@ function cdf(digest::MergingDigest, x)
     if isnan(x) || isinf(x)
         throw(ArgumentError("Invalid value: $x"))
     end
-    mergeNewValues(digest, true, digest.privateCompression)
+    mergeNewValues!(digest, true, digest.privateCompression)
 
     if length(digest) == 0
         # no data to examine
@@ -321,7 +321,7 @@ function cdf(digest::MergingDigest, x)
         end
     else
         n = length(digest)
-        min, max = first(digest.sketch), last(digest.sketch)
+        min, max = first(digest.sketch).mean, last(digest.sketch).mean
         total = digest.totalWeight[1]
         
         if x < min
@@ -345,10 +345,10 @@ function cdf(digest::MergingDigest, x)
         for i in 1:n
             c1 = digest.sketch[i]
             c2 = digest.sketch[i + 1]
-            if x == c.mean
+            if x == c1.mean
                 dw = 0
-                while i < n && digest.sketch[i].mean == x
-                    dw += digest.sketch[i].count
+                while i < n && c1.mean == x
+                    dw += c1.count
                     i += 1
                 end
                 return (weightSoFar + dw/2) / total
@@ -365,7 +365,7 @@ function cdf(digest::MergingDigest, x)
                         if c2.count == 1
                             # two singletons means no interpolation
                             # left singleton is in, right is out
-                            return (weightSoFar + 1) / totalWeight
+                            return (weightSoFar + 1) / total
                         else
                             leftExcludedW = 0.5
                         end
@@ -389,7 +389,7 @@ function cdf(digest::MergingDigest, x)
                     dwNoSingleton > dw / 2 || throw(AssertionError("Can't have excess effect of singletons"))
 
                     base = weightSoFar + c1.count / 2 + leftExcludedW
-                    return (base + dwNoSingleton * (x - left) / (right - left)) / totalWeight
+                    return (base + dwNoSingleton * (x - left) / (right - left)) / total
                 else
                     # this is simply caution against floating point madness
                     # it is conceivable that the centroids will be different
@@ -398,7 +398,7 @@ function cdf(digest::MergingDigest, x)
                     return (weightSoFar + dw) / totalWeight
                 end
             else
-                weightSoFar += weight[it];
+                weightSoFar += c1.count
             end
         end
         throw(AssertionError("Can't happen ... loop fell through"))
