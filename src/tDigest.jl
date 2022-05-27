@@ -350,6 +350,7 @@ function cdf(digest::MergingDigest, x)
                 while i < n && c1.mean == x
                     dw += c1.count
                     i += 1
+                    c1 = digest.sketch[i]
                 end
                 return (weightSoFar + dw/2) / total
             elseif c1.mean ≤ x < c2.mean
