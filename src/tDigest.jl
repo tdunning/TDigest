@@ -124,17 +124,37 @@ function max_step(digest::MergingDigest, q::Number, private=true)
 end    
 
 function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where {T, K}
-    if any(isnan.(vals))
-        throw(ArgumentError("Cannot add NaN to t-digest"))
+    if length(vals) > 10_000
+        for first = 1:10_000:length(vals)
+            last = min(length(vals), first + 9_999)
+            fit!(digest, vals[first:last])
+        end
+    else
+        if any(isnan.(vals))
+            throw(ArgumentError("Cannot add NaN to t-digest"))
+        end
+        
+        digest.totalWeight[1] += length(vals)
+        if length(vals) + length(digest.sketch) > digest.maxSize
+            tmp = copy(digest.sketch)
+            append!(tmp, [Centroid{T, K}(x, 1) for x in vals])
+            if digest.logData
+                log = copy(digest.log)
+                append!(log, [[x] for x in vals])
+            else
+                log = digest.log
+            end
+            
+            # merging on a temporary copy of the data avoids excess expansion of the sketch itself 
+            mergeNewValues!(digest, tmp, log, false, digest.privateCompression)
+            
+            copy!(digest.sketch, copy(tmp))
+            copy!(digest.log, log)
+        else
+            append!(digest.sketch, [Centroid{T, K}(x, 1) for x in vals])
+        end
     end
-    append!(digest.sketch, [Centroid{T, K}(x, 1) for x in vals])
-    digest.totalWeight[1] += length(vals)
-    if digest.logData
-        append!(digest.log, [[x] for x in vals])
-    end
-    if length(digest) > digest.maxSize
-        mergeNewValues!(digest, false, digest.privateCompression)
-    end
+    return
 end
 
 function fit!(digest::MergingDigest{T, K}, x) where {T, K}
@@ -146,20 +166,41 @@ function fit!(digest::MergingDigest{T, K}, x) where {T, K}
     if digest.logData
         push!(digest.log, [x])
     end
-    if length(digest) > digest.maxSize
+    if length(digest.sketch) > digest.maxSize
         mergeNewValues!(digest, false, digest.privateCompression)
     end
+    return
 end
 
 function merge!(digest::MergingDigest, other::MergingDigest)
-    append!(digest.sketch, other.sketch)
-    if digest.logData
-        if !other.logData
-            throw(ArgumentError("Can't merge a digest that hasn't logged samples to one that has"))
+    if digest.logData && !other.logData
+        throw(ArgumentError("Can't merge a digest that hasn't logged samples to one that has"))
+    end
+
+    digest.totalWeight[1] += other.totalWeight[1]
+    if length(digest.sketch) + length(other.sketch) > digest.maxSize
+        tmp = copy(digest.sketch)
+        append!(tmp, other.sketch)
+
+        log = copy(digest.log)
+        append!(log, other.log)
+
+        mergeNewValues!(digest, tmp, log, false, digest.privateCompression)
+
+        copy!(digest.sketch, tmp)
+        if digest.logData
+            copy!(digest.log, log)
         end
-        append!(digest.log, other.log)
+    else
+        append!(digest.sketch, other.sketch)
+        if digest.logData
+            append!(digest.log, other.log)
+        end
     end
 end
+
+mergeNewValues!(digest::MergingDigest, force::Bool, compression) =
+    mergeNewValues!(digest, digest.sketch, digest.log, force, compression)
 
 md"""
 Merge the clusters of a t-digest as much as possible. This has no effect 
@@ -170,22 +211,27 @@ The order of the clusters after this operation is either perfectly ascending
 or perfectly descending except if the merge is forced, then the result is
 always in ascending order.
 """
-function mergeNewValues!(digest::MergingDigest, force::Bool, compression) 
-    if length(digest.sketch) < 2
+function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, force::Bool, compression) 
+    if length(sketch) < 2
         # nothing to do
         return
     end
-    if force || length(digest.sketch) > digest.maxSize
+    if force || length(sketch) > digest.maxSize
         # note that we run the merge in reverse every other
         # merge to avoid left-to-right bias in merging
         reverse = !force && digest.useAlternatingSort && digest.mergeCount[1] % 2 == 1
         if digest.logData
-            order = sortperm(digest.sketch, rev=reverse)
-            digest.log = digest.log[order]
-            digest.sketch = digest.sketch[order]
+            order = sortperm(sketch, rev=reverse)
+            permute!(log, order)
+            permute!(sketch, order)
         else
-            sort!(digest.sketch, rev=reverse)
+            sort!(sketch, rev=reverse)
         end
+
+        if !reverse && length(sketch) < compression && issorted(sketch)
+            return
+        end
+        
         digest.mergeCount[1] += 1
 
         # now pass through the data merging clusters where possible
@@ -193,47 +239,49 @@ function mergeNewValues!(digest::MergingDigest, force::Bool, compression)
         total = digest.totalWeight[1]
         norm = normalizer(digest.scale, compression, total)
 
-        length(digest.sketch) ≥ 2 || throw(AssertionError("Impossible")) 
+        length(sketch) ≥ 2 || throw(AssertionError("Impossible")) 
 
         # w_so_far is total count up to and including `sketch[to]`
         # k0 is the scale up to but not including `sketch[to]`
-        w_so_far = digest.sketch[1].count
+        w_so_far = sketch[1].count
         k0 = k_scale(digest.scale, w_so_far / total, norm)
-        w_so_far += digest.sketch[2].count
+        w_so_far += sketch[2].count
         to = 2
         from = 3
         # the limiting weight is computed by finding a diff of 1 in scale 
         limit = total * q_scale(digest.scale, k0 + 1, norm)
-        while from <= length(digest.sketch)
+        while from <= length(sketch)
             from > to || throw(AssertionError("from ≤ to"))
             
-            dw = digest.sketch[from].count
-            if w_so_far + dw > limit || from == length(digest.sketch)
+            dw = sketch[from].count
+            if w_so_far + dw > limit || from == length(sketch)
                 # can't merge due to size or due to forcing singleton at end
                 to += 1
                 k0 = k_scale(digest.scale, w_so_far / total, norm)
                 limit = total * q_scale(digest.scale, k0 + 1, norm)
 
                 if to < from
-                    digest.sketch[to] = digest.sketch[from]
+                    sketch[to] = sketch[from]
                     if digest.logData
-                        digest.log[to] = digest.sketch[from]
+                        log[to] = log[from]
                     end
                 end
                 from += 1
             else
                 # but we can merge other clusters if small enough
-                digest.sketch[to] = merge(digest.sketch[to], digest.sketch[from])
+                sketch[to] = merge(sketch[to], sketch[from])
                 if digest.logData
-                    append!(digest.sketch[to], digest.sketch[from])
+                    append!(log[to], log[from])
                 end
                 from += 1
             end
             w_so_far += dw
         end
-        resize!(digest.sketch, to)
-        length(digest.sketch) < compression ||
-            @error "Merging was ineffective" digest.sketch
+        resize!(sketch, to)
+        length(sketch) < compression || begin
+            @error "Merging was ineffective" compression sketch
+            throw(AssertionError("Merging was ineffective"))
+        end
     end
 end
 
@@ -259,6 +307,20 @@ function checkWeights(digest::MergingDigest)
         return
     end
 
+    sizeof(digest.sketch) / sizeof(digest.sketch[1]) ≤ digest.maxSize ||
+        throw(AssertionError("Digest sketch is oversized"))
+
+    sum(map(c->c.count, digest.sketch)) ≈ digest.totalWeight[1] ||
+        throw(AssertionError("Digest has lost track of size"))
+
+    if digest.logData
+        sum(map(length, digest.log)) ≈ digest.totalWeight[1] ||
+            throw(AssertionError("Digest has lost track of samples"))
+    else
+        length(digest.log) == 0 ||
+            throw(AssertionError("Digest has shouldn't have logged samples"))
+    end
+            
     tmp = sort(digest.sketch)
     
     (tmp[1].count == 1 && tmp[end].count == 1) ||
@@ -290,10 +352,9 @@ end
 md"""
 Merges any pending inputs and compresses the data down to the public setting.
 Note that this typically loses a bit of precision and thus isn't a thing to
-be doing all the time. It is best done only when we want to show results to
-the outside world.
+be doing all the time. It is best done only when we want to persist the digest.
 """
-compress(digest::MergingDigest) = mergeNewValues(digest, true, digest.publicCompression)
+compress(digest::MergingDigest) = mergeNewValues!(digest, true, digest.publicCompression)
 
 Base.length(digest::MergingDigest) = length(digest.sketch)
          
@@ -313,9 +374,9 @@ function cdf(digest::MergingDigest, x)
         # exactly one centroid, should have max==min
         v = digest.sketch[1].center
         if x < v
-            return 0
+            return 0.0
         elseif x > v
-            return 1
+            return 1.0
         else
             return 0.5
         end
@@ -325,13 +386,13 @@ function cdf(digest::MergingDigest, x)
         total = digest.totalWeight[1]
         
         if x < min
-            return 0
+            return 0.0
         elseif x == min
             return 0.5 / total
         end
 
         if x > max
-            return 1
+            return 1.0
         elseif x == max
             return 1 - 0.5 / total
         end
@@ -405,96 +466,122 @@ function cdf(digest::MergingDigest, x)
         throw(AssertionError("Can't happen ... loop fell through"))
     end
 end
+
 """
-    @Override
-    public double quantile(double q) {
-        if (q < 0 || q > 1) {
-            throw new IllegalArgumentException("q should be in [0,1], got " + q);
-        }
-        mergeNewValues();
+Estimates the quantile that corresponds to a given value of q.
 
-        if (lastUsedCell == 0) {
-            # no centroids means no data, no way to get a quantile
-            return Double.NaN;
-        } else if (lastUsedCell == 1) {
-            # with one data point, all quantiles lead to Rome
-            return mean[0];
-        }
+This is trickier than you might think because we have to deal with
+loss of information where centroids are due to more than one sample
+but we want to be as accurate as possible where a centroid has only
+a single sample. We also want to handle centroids with two samples
+well.
+"""
+function quantile(digest::MergingDigest, q::Number)
+    if q < 0 || q > 1
+            throw(ArgumentError("q should be in [0,1], got $q"))
+    end
+    mergeNewValues!(digest, true, digest.privateCompression)
 
-        # we know that there are at least two centroids now
-        int n = lastUsedCell;
+    if length(digest.sketch) == 0
+        # no centroids means no data, no way to get a quantile
+        return NaN
+    elseif length(digest.sketch) == 1 
+        # with one data point, all quantiles lead to Rome
+        return digest.sketch[1].mean
+    end
 
-        # if values were stored in a sorted array, index would be the offset we are interested in
-        final double index = q * totalWeight;
+    # we know that there are at least two centroids now
+    n = length(digest.sketch)
 
-        # beyond the boundaries, we return min or max
-        # usually, the first centroid will have unit weight so this will make it moot
-        if (index < 1) {
-            return min;
-        }
+    # if all of the values were stored in a sorted array, index would be the offset we are interested in
+    totalWeight = digest.totalWeight[1]
+    index = q * totalWeight
 
-        # if the left centroid has more than one sample, we still know
-        # that one sample occurred at min so we can do some interpolation
-        if (weight[0] > 1 && index < weight[0] / 2) {
-            # there is a single sample at min so we interpolate with less weight
-            return min + (index - 1) / (weight[0] / 2 - 1) * (mean[0] - min);
-        }
+    (digest.sketch[1].count == 1 && digest.sketch[end].count == 1) ||
+        throw(AssertionError("Ill-formed digest has too large weight in first or last centroid"))
 
-        # usually the last centroid will have unit weight so this test will make it moot
-        if (index > totalWeight - 1) {
-            return max;
-        }
+    # beyond the boundaries, we return min or max
+    # the first centroid must have unit weight so this will make it moot
+    if index < 1
+        return digest.sketch[1].mean
+    end
 
-        # if the right-most centroid has more than one sample, we still know
-        # that one sample occurred at max so we can do some interpolation
-        if (weight[n - 1] > 1 && totalWeight - index <= weight[n - 1] / 2) {
-            return max - (totalWeight - index - 1) / (weight[n - 1] / 2 - 1) * (max - mean[n - 1]);
-        }
-
-        # in between extremes we interpolate between centroids
-        double weightSoFar = weight[0] / 2;
-        for (int i = 0; i < n - 1; i++) {
-            double dw = (weight[i] + weight[i + 1]) / 2;
-            if (weightSoFar + dw > index) {
-                # centroids i and i+1 bracket our current point
-
-                # check for unit weight
-                double leftUnit = 0;
-                if (weight[i] == 1) {
-                    if (index - weightSoFar < 0.5) {
-                        # within the singleton's sphere
-                        return mean[i];
-                    } else {
-                        leftUnit = 0.5;
-                    }
-                }
-                double rightUnit = 0;
-                if (weight[i + 1] == 1) {
-                    if (weightSoFar + dw - index <= 0.5) {
-                        # no interpolation needed near singleton
-                        return mean[i + 1];
-                    }
-                    rightUnit = 0.5;
-                }
-                double z1 = index - weightSoFar - leftUnit;
-                double z2 = weightSoFar + dw - index - rightUnit;
-                return weightedAverage(mean[i], z2, mean[i + 1], z1);
-            }
-            weightSoFar += dw;
-        }
-        # we handled singleton at end up above
-        assert weight[n - 1] > 1;
-        assert index <= totalWeight;
-        assert index >= totalWeight - weight[n - 1] / 2;
-
-        # weightSoFar = totalWeight - weight[n-1]/2 (very nearly)
-        # so we interpolate out to max value ever seen
-        double z1 = index - totalWeight - weight[n - 1] / 2.0;
-        double z2 = weight[n - 1] / 2 - z1;
-        return weightedAverage(mean[n - 1], z1, max, z2);
-    }
+    if index > totalWeight - 1
+        return digest.sketch[end].mean
+    end
 
 
+    1 ≤ index ≤ totalWeight - 1 ||
+        throw(AssertionError("Impossible value of index"))
+
+    # in between extremes we interpolate between centroids
+    weightSoFar = digest.sketch[1].count / 2
+    for i in 1:(length(digest.sketch)-1)
+        dw = (digest.sketch[i].count + digest.sketch[i + 1].count) / 2;
+        if weightSoFar + dw > index
+            # centroids i and i+1 bracket our current point
+            # this has to happen before loop completes because index ≤ totalWeight - 1
+
+            # check for unit weight
+            leftUnit = 0.0
+            if digest.sketch[i].count == 1
+                if index - weightSoFar < 0.5
+                    # within the singleton's sphere
+                    return digest.sketch[i].mean
+                else
+                    leftUnit = 0.5
+                end
+            end
+
+            rightUnit = 0.0
+            if digest.sketch[i + 1].count == 1
+                if weightSoFar + dw - index <= 0.5
+                    # no interpolation needed near singleton
+                    return digest.sketch[i + 1].mean
+                end
+                rightUnit = 0.5
+            end
+            z1 = index - weightSoFar - leftUnit
+            z2 = weightSoFar + dw - index - rightUnit
+            return weightedAverageSorted(digest.sketch[i].mean, z2, digest.sketch[i + 1].mean, z1)
+        end
+        weightSoFar += dw
+    end
+    # if this loop completes then weightSoFar ≈ totalWeight - 1/2
+    # but at the start, we knew that index ≤ totalWeight - 1
+    @error "Fell out of the loop" index totalWeight
+    throw(AssertionError("Fell out the bottom of the loop (which should be impossible)"))
+end
+
+"""
+Same as {@link #weightedAverageSorted(double, double, double, double)} but flips
+the order of the variables if `x2` is greater than
+`x1`.
+"""
+function weightedAverage(x1, w1, x2, w2)
+    if x1 ≤ x2
+        return weightedAverageSorted(x1, w1, x2, w2)
+    else
+        return weightedAverageSorted(x2, w2, x1, w1)
+    end
+end
+
+"""
+Compute the weighted average between `x1` with a weight of
+`w1` and `x2` with a weight of `w2`.
+This expects `x1` to be less than or equal to `x2`
+and is guaranteed to return a number in `[x1, x2]`. An
+explicit check is required since this isn't guaranteed with floating-point
+numbers.
+"""
+function weightedAverageSorted(x1, w1, x2, w2)
+    x1 ≤ x2 || throw(AssertionError("Out of order values"))
+    x = (x1 * w1 + x2 * w2) / (w1 + w2)
+    return max(x1, min(x, x2))
+end
+
+            
+"""
     @Override
     public int byteSize() {
         compress();

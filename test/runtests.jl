@@ -1,9 +1,10 @@
 using tDigest
 using Test
 
-include("scale_function_tests.jl")
 
 include("basic_invariants.jl")
 
 include("cdf_tests.jl")
+
+include("scale_function_tests.jl")
 
