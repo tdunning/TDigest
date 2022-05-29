@@ -1,4 +1,4 @@
-using tDigest
+using TDigest
 using Test
 
 

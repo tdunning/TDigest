@@ -1,4 +1,4 @@
-module tDigest
+module TDigest
 
 using Markdown
 using LinearAlgebra

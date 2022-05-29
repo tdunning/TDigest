@@ -1,4 +1,4 @@
-name = "tDigest"
+name = "TDigest"
 uuid = "1651a0ed-c333-45c8-9516-99f2a2ddde92"
 authors = ["Ted Dunning <ted.dunning@gmail.com>"]
 version = "0.1.0"
