@@ -3,6 +3,8 @@ module TDigest
 using Markdown
 using LinearAlgebra
 
+import Statistics: quantile
+using OnlineStatsBase
 
 
 struct Centroid{T, K}
@@ -14,7 +16,7 @@ Base.isless(a::Centroid{T, K}, b::Centroid{T, K}) where {T, K} = a.mean < b.mean
 
 include("scale.jl")
 
-md""" 
+md"""
 Maintains a t-digest by collecting new points in a buffer that
 is then sorted occasionally and merged into a sorted array that
 contains previously computed centroids.
@@ -50,17 +52,17 @@ worthwhile since even with the overhead, the memory cost is less than
 40 bytes per centroid which is much less than half what the
 AVLTreeDigest uses and no dynamic allocation is required at all.
 """
-struct MergingDigest{T, K} 
+struct MergingDigest{T, K} <: OnlineStat{Number}
     function MergingDigest{T1,K1}(public::Real, private::Real,
                                   scale::ScaleFunction, maxSize::Int,
-                                  logData::Bool) where {T1, K1} 
+                                  logData::Bool) where {T1, K1}
         new{T1, K1}(public, private, scale,
-                    maxSize, 
+                    maxSize,
                     logData, Vector{Vector{T1}}(), [0],
                     Vector{Centroid{T1, K1}}(),
                     [0], true, true)
     end
-    
+
     publicCompression::Float64
     privateCompression::Float64
     scale::ScaleFunction
@@ -71,7 +73,7 @@ struct MergingDigest{T, K}
     # these hold a record of all samples we have seen
     logData::Bool
     log::Vector{Vector{T}}
-    
+
     # sum_i weight[i]
     totalWeight::Vector{K}
 
@@ -89,19 +91,19 @@ struct MergingDigest{T, K}
     useTwoLevelCompression
 end
 
-function MergingDigest(compression) 
+function MergingDigest(compression)
     MergingDigest(compression, K_3())
 end
 
-function MergingDigest(compression, scale::ScaleFunction) 
+function MergingDigest(compression, scale::ScaleFunction)
     MergingDigest{Float64, Int64}(compression, 5*compression, true, scale)
 end
 
-function MergingDigest{T,K}(compression) where {T, K} 
+function MergingDigest{T,K}(compression) where {T, K}
     MergingDigest{T, K}(compression, K_3())
 end
 
-function MergingDigest{T,K}(compression, scale::ScaleFunction) where {T, K} 
+function MergingDigest{T,K}(compression, scale::ScaleFunction) where {T, K}
     MergingDigest{T, K}(compression, 5*compression, true, scale)
 end
 
@@ -121,7 +123,7 @@ end
 function max_step(digest::MergingDigest, q::Number, private=true)
     compression = private ? digest.privateCompression : digest.publicCompression
     max_step(digest.scale, q, compression, length(digest))
-end    
+end
 
 function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where {T, K}
     if length(vals) > 10_000
@@ -133,7 +135,7 @@ function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where
         if any(isnan.(vals))
             throw(ArgumentError("Cannot add NaN to t-digest"))
         end
-        
+
         digest.totalWeight[1] += length(vals)
         if length(vals) + length(digest.sketch) > digest.maxSize
             tmp = copy(digest.sketch)
@@ -144,10 +146,10 @@ function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where
             else
                 log = digest.log
             end
-            
-            # merging on a temporary copy of the data avoids excess expansion of the sketch itself 
+
+            # merging on a temporary copy of the data avoids excess expansion of the sketch itself
             mergeNewValues!(digest, tmp, log, false, digest.privateCompression)
-            
+
             copy!(digest.sketch, copy(tmp))
             copy!(digest.log, log)
         else
@@ -157,7 +159,7 @@ function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where
     return
 end
 
-function fit!(digest::MergingDigest{T, K}, x) where {T, K}
+function OnlineStatsBase._fit!(digest::MergingDigest{T, K}, x) where {T, K}
     if isnan(x)
         throw(ArgumentError("Cannot add NaN to t-digest"))
     end
@@ -172,7 +174,7 @@ function fit!(digest::MergingDigest{T, K}, x) where {T, K}
     return
 end
 
-function merge!(digest::MergingDigest, other::MergingDigest)
+function OnlineStatsBase._merge!(digest::MergingDigest, other::MergingDigest)
     if digest.logData && !other.logData
         throw(ArgumentError("Can't merge a digest that hasn't logged samples to one that has"))
     end
@@ -199,19 +201,25 @@ function merge!(digest::MergingDigest, other::MergingDigest)
     end
 end
 
+OnlineStatsBase.nobs(digest::MergingDigest) = sum(x -> x.count, digest.sketch, init=0)
+
+OnlineStatsBase.value(o::MergingDigest) = o
+
+Base.show(io::IO, o::MergingDigest) = print(io, "MergingDigest: n=", nobs(o))
+
 mergeNewValues!(digest::MergingDigest, force::Bool, compression) =
     mergeNewValues!(digest, digest.sketch, digest.log, force, compression)
 
 md"""
-Merge the clusters of a t-digest as much as possible. This has no effect 
+Merge the clusters of a t-digest as much as possible. This has no effect
 if not enough data has been added since the last merge unless the merge
 is forced.
 
-The order of the clusters after this operation is either perfectly ascending 
+The order of the clusters after this operation is either perfectly ascending
 or perfectly descending except if the merge is forced, then the result is
 always in ascending order.
 """
-function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, force::Bool, compression) 
+function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, force::Bool, compression)
     if length(sketch) < 2
         # nothing to do
         return
@@ -231,7 +239,7 @@ function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, for
         if !reverse && length(sketch) < compression && issorted(sketch)
             return
         end
-        
+
         digest.mergeCount[1] += 1
 
         # now pass through the data merging clusters where possible
@@ -239,7 +247,7 @@ function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, for
         total = digest.totalWeight[1]
         norm = normalizer(digest.scale, compression, total)
 
-        length(sketch) ≥ 2 || throw(AssertionError("Impossible")) 
+        length(sketch) ≥ 2 || throw(AssertionError("Impossible"))
 
         # w_so_far is total count up to and including `sketch[to]`
         # k0 is the scale up to but not including `sketch[to]`
@@ -248,11 +256,11 @@ function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, for
         w_so_far += sketch[2].count
         to = 2
         from = 3
-        # the limiting weight is computed by finding a diff of 1 in scale 
+        # the limiting weight is computed by finding a diff of 1 in scale
         limit = total * q_scale(digest.scale, k0 + 1, norm)
         while from <= length(sketch)
             from > to || throw(AssertionError("from ≤ to"))
-            
+
             dw = sketch[from].count
             if w_so_far + dw > limit || from == length(sketch)
                 # can't merge due to size or due to forcing singleton at end
@@ -299,7 +307,7 @@ function merge(a::Centroid{T, K}, b::Centroid{T, K}) where {T, K}
 end
 
 md"""
-Scans a digest to verify that the digest invariant is satisfied without 
+Scans a digest to verify that the digest invariant is satisfied without
 compressing or sorting the data in the digest.
 """
 function checkWeights(digest::MergingDigest)
@@ -320,9 +328,9 @@ function checkWeights(digest::MergingDigest)
         length(digest.log) == 0 ||
             throw(AssertionError("Digest has shouldn't have logged samples"))
     end
-            
+
     tmp = sort(digest.sketch)
-    
+
     (tmp[1].count == 1 && tmp[end].count == 1) ||
         @error "debug" tmp[1] tmp[end]
 
@@ -330,8 +338,8 @@ function checkWeights(digest::MergingDigest)
     norm = normalizer(digest.scale, digest.privateCompression, digest.totalWeight[1])
     q1 = 0
     k1 = k_scale(scale, q1, norm)
-    
-    
+
+
     i = 0
     for c in tmp
         i += 1
@@ -357,7 +365,7 @@ be doing all the time. It is best done only when we want to persist the digest.
 compress(digest::MergingDigest) = mergeNewValues!(digest, true, digest.publicCompression)
 
 Base.length(digest::MergingDigest) = length(digest.sketch)
-         
+
 md"""
 Approximate the value of the empirical CDF at a value of `x`.
 """
@@ -384,7 +392,7 @@ function cdf(digest::MergingDigest, x)
         n = length(digest)
         min, max = first(digest.sketch).mean, last(digest.sketch).mean
         total = digest.totalWeight[1]
-        
+
         if x < min
             return 0.0
         elseif x == min
@@ -438,7 +446,7 @@ function cdf(digest::MergingDigest, x)
 
                     # can't have double singleton (handled that earlier)
                     dw > 1 || throw(AssertionError("Can't have double singleton"))
-                    (leftExcludedW + rightExcludedW) <= 0.5 || 
+                    (leftExcludedW + rightExcludedW) <= 0.5 ||
                         throw(AssertionError("Can't have double singleton"))
 
                     # adjust endpoints for any singleton
@@ -485,7 +493,7 @@ function quantile(digest::MergingDigest, q::Number)
     if length(digest.sketch) == 0
         # no centroids means no data, no way to get a quantile
         return NaN
-    elseif length(digest.sketch) == 1 
+    elseif length(digest.sketch) == 1
         # with one data point, all quantiles lead to Rome
         return digest.sketch[1].mean
     end
@@ -580,7 +588,7 @@ function weightedAverageSorted(x1, w1, x2, w2)
     return max(x1, min(x, x2))
 end
 
-            
+
 """
     @Override
     public int byteSize() {
@@ -669,6 +677,6 @@ end
 
     }
 """
-              
+
 
 end # module
