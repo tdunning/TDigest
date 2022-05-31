@@ -203,6 +203,10 @@ end
 
 OnlineStatsBase.nobs(digest::MergingDigest) = sum(x -> x.count, digest.sketch, init=0)
 
+OnlineStatsBase.value(o::MergingDigest) = o
+
+Base.show(io::IO, o::MergingDigest) = print(io, "MergingDigest: n=", nobs(o))
+
 mergeNewValues!(digest::MergingDigest, force::Bool, compression) =
     mergeNewValues!(digest, digest.sketch, digest.log, force, compression)
 
