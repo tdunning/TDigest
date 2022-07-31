@@ -9,7 +9,7 @@ struct Centroid{T, K}
     mean::T
     count::K
 end
-defalg(v::AbstractArray{<:Centroid}) = QuickSort
+defalg(v::AbstractArray{<:Centroid}) = MergeSort
 Base.isless(a::Centroid{T, K}, b::Centroid{T, K}) where {T, K} = a.mean < b.mean
 
 include("scale.jl")
@@ -50,15 +50,15 @@ worthwhile since even with the overhead, the memory cost is less than
 40 bytes per centroid which is much less than half what the
 AVLTreeDigest uses and no dynamic allocation is required at all.
 """
-struct MergingDigest{T, K} 
+mutable struct MergingDigest{T<:Number, K<:Number}
     function MergingDigest{T1,K1}(public::Real, private::Real,
                                   scale::ScaleFunction, maxSize::Int,
-                                  logData::Bool) where {T1, K1} 
+                                  logData::Bool) where {T1 <: Number, K1 <: Number} 
         new{T1, K1}(public, private, scale,
                     maxSize, 
-                    logData, Vector{Vector{T1}}(), [0],
+                    logData, Vector{Vector{T1}}(), 0,
                     Vector{Centroid{T1, K1}}(),
-                    [0], true, true)
+                    0, true, 0, false, true)
     end
     
     publicCompression::Float64
@@ -73,16 +73,22 @@ struct MergingDigest{T, K}
     log::Vector{Vector{T}}
     
     # sum_i weight[i]
-    totalWeight::Vector{K}
+    totalWeight::K
 
     # current centroids, guaranteed to meet the t-digest invariant
     # also, sorted in order of mean
     sketch::Vector{Centroid{T, K}}
 
-    mergeCount::Vector{Int32}
+    mergeCount::Int32
 
     # if true, alternate upward and downward merge passes
     useAlternatingSort
+
+    # this records how many centroids survived the last merge
+    watermark::Int
+
+    # what order is the watermarked part of the digest?
+    isReversed
 
     # if true, use higher working value of compression during
     # construction, then reduce on presentation
@@ -94,7 +100,7 @@ function MergingDigest(compression)
 end
 
 function MergingDigest(compression, scale::ScaleFunction) 
-    MergingDigest{Float64, Int64}(compression, 5*compression, true, scale)
+    MergingDigest{Float64, Float64}(compression, 5*compression, true, scale)
 end
 
 function MergingDigest{T,K}(compression) where {T, K} 
@@ -118,12 +124,17 @@ function MergingDigest{T,K}(compression, maxPending, useTwoLevelCompression, sca
     MergingDigest{T, K}(publicCompression, compression, scale, maxSize, false)
 end
 
+weight(c::Centroid) = c.count
+
 function max_step(digest::MergingDigest, q::Number, private=true)
     compression = private ? digest.privateCompression : digest.publicCompression
     max_step(digest.scale, q, compression, length(digest))
 end    
 
 function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where {T, K}
+    if length(digest.sketch) > 0 && (digest.sketch[begin].count > 1 || digest.sketch[end].count > 1)
+        @error "First or last centroid is too large" digest.sketch digest.mergeCount
+        end
     if length(vals) > 10_000
         for first = 1:10_000:length(vals)
             last = min(length(vals), first + 9_999)
@@ -134,7 +145,7 @@ function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where
             throw(ArgumentError("Cannot add NaN to t-digest"))
         end
         
-        digest.totalWeight[1] += length(vals)
+        digest.totalWeight += length(vals)
         if length(vals) + length(digest.sketch) > digest.maxSize
             tmp = copy(digest.sketch)
             append!(tmp, [Centroid{T, K}(x, 1) for x in vals])
@@ -146,7 +157,7 @@ function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where
             end
             
             # merging on a temporary copy of the data avoids excess expansion of the sketch itself 
-            mergeNewValues!(digest, tmp, log, false, digest.privateCompression)
+            mergeNewValues!(digest, tmp, log, digest.watermark, false, digest.privateCompression)
             
             copy!(digest.sketch, copy(tmp))
             copy!(digest.log, log)
@@ -154,7 +165,9 @@ function fit!(digest::MergingDigest{T, K}, vals::AbstractVector{<:Number}) where
             append!(digest.sketch, [Centroid{T, K}(x, 1) for x in vals])
         end
     end
-    return
+    if length(digest.sketch) > 0 && (digest.sketch[begin].count > 1 || digest.sketch[end].count > 1)
+        @error "First or last centroid is too large" digest.sketch digest.mergeCount
+    end
 end
 
 function fit!(digest::MergingDigest{T, K}, x) where {T, K}
@@ -162,7 +175,7 @@ function fit!(digest::MergingDigest{T, K}, x) where {T, K}
         throw(ArgumentError("Cannot add NaN to t-digest"))
     end
     push!(digest.sketch, Centroid{T, K}(x, 1))
-    digest.totalWeight[1] += 1
+    digest.totalWeight += 1
     if digest.logData
         push!(digest.log, [x])
     end
@@ -177,7 +190,7 @@ function merge!(digest::MergingDigest, other::MergingDigest)
         throw(ArgumentError("Can't merge a digest that hasn't logged samples to one that has"))
     end
 
-    digest.totalWeight[1] += other.totalWeight[1]
+    digest.totalWeight += other.totalWeight
     if length(digest.sketch) + length(other.sketch) > digest.maxSize
         tmp = copy(digest.sketch)
         append!(tmp, other.sketch)
@@ -185,7 +198,7 @@ function merge!(digest::MergingDigest, other::MergingDigest)
         log = copy(digest.log)
         append!(log, other.log)
 
-        mergeNewValues!(digest, tmp, log, false, digest.privateCompression)
+        mergeNewValues!(digest, tmp, log, true, digest.privateCompression)
 
         copy!(digest.sketch, tmp)
         if digest.logData
@@ -199,8 +212,13 @@ function merge!(digest::MergingDigest, other::MergingDigest)
     end
 end
 
-mergeNewValues!(digest::MergingDigest, force::Bool, compression) =
-    mergeNewValues!(digest, digest.sketch, digest.log, force, compression)
+function mergeNewValues!(digest::MergingDigest) 
+    mergeNewValues!(digest, digest.sketch, digest.log, digest.watermark, true, digest.privateCompression)
+end
+
+function mergeNewValues!(digest::MergingDigest, force::Bool, compression) 
+    mergeNewValues!(digest, digest.sketch, digest.log, digest.watermark, force, compression)
+end
 
 md"""
 Merge the clusters of a t-digest as much as possible. This has no effect 
@@ -211,35 +229,59 @@ The order of the clusters after this operation is either perfectly ascending
 or perfectly descending except if the merge is forced, then the result is
 always in ascending order.
 """
-function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, force::Bool, compression) 
-    if length(sketch) < 2
-        # nothing to do
+function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, watermark, force::Bool, compression) 
+    if length(sketch) ≤ 1
+        # nothing to do ... one element can't even be out of order
         return
     end
     if force || length(sketch) > digest.maxSize
         # note that we run the merge in reverse every other
         # merge to avoid left-to-right bias in merging
-        reverse = !force && digest.useAlternatingSort && digest.mergeCount[1] % 2 == 1
+        reverseOrder = !force && digest.useAlternatingSort && digest.mergeCount % 2 == 1
+
+        if digest.isReversed != reverseOrder
+            # reversing the watermarked part of the sketch keeps the order of established centroids stable
+            # this is very important with repeated values because otherwise the digest invariant can go
+            # out of whack when centroids with identical means get reordered
+            reverse!(@view(sketch[1:digest.watermark]))
+        end
+        if sketch[begin].count > 1 || sketch[end].count > 1
+            @error "first or last centroid too large" sketch digest.isReversed reverseOrder digest.mergeCount
+            throw(AssertionError("Boundary centroid not singleton"))
+        end
+        if digest.watermark > 0
+            if sketch[digest.watermark].count > 1
+                @show digest.sketch
+                @error "watermarked centroid too large" sketch reverseOrder digest.mergeCount digest.watermark
+                  throw(AssertionError("Boundary centroid not singleton"))
+            end
+        end
+     
         if digest.logData
-            order = sortperm(sketch, rev=reverse)
+            order = sortperm(sketch, rev=reverseOrder)
             permute!(log, order)
             permute!(sketch, order)
         else
-            sort!(sketch, rev=reverse)
+            sort!(sketch, rev=reverseOrder)
         end
-
-        if !reverse && length(sketch) < compression && issorted(sketch)
+        digest.isReversed = reverseOrder
+        
+        if !reverseOrder && length(sketch) < compression
+            # we just sorted it so the sketch is a trivial t-digest
+            # this return can only happen when we forced the sort,
+            # but it is still worth checking
+            digest.watermark = length(sketch)
             return
         end
-        
-        digest.mergeCount[1] += 1
+
+        digest.mergeCount += 1
 
         # now pass through the data merging clusters where possible
         # but start partway in because we won't merge the first cluster
-        total = digest.totalWeight[1]
+        total = digest.totalWeight
         norm = normalizer(digest.scale, compression, total)
 
-        length(sketch) ≥ 2 || throw(AssertionError("Impossible")) 
+        length(sketch) ≥ 2 || throw(AssertionError("Impossibly enough, sketch is too short")) 
 
         # w_so_far is total count up to and including `sketch[to]`
         # k0 is the scale up to but not including `sketch[to]`
@@ -248,10 +290,10 @@ function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, for
         w_so_far += sketch[2].count
         to = 2
         from = 3
-        # the limiting weight is computed by finding a diff of 1 in scale 
+        # the limiting weight is computed by finding a diff of 1 in scale
         limit = total * q_scale(digest.scale, k0 + 1, norm)
         while from <= length(sketch)
-            from > to || throw(AssertionError("from ≤ to"))
+            from > to || throw(AssertionError("Impossible: from ≤ to"))
             
             dw = sketch[from].count
             if w_so_far + dw > limit || from == length(sketch)
@@ -268,6 +310,9 @@ function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, for
                 end
                 from += 1
             else
+                if to == 1
+                    throw(AssertionError("merging first cluster!"))
+                end
                 # but we can merge other clusters if small enough
                 sketch[to] = merge(sketch[to], sketch[from])
                 if digest.logData
@@ -278,11 +323,35 @@ function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, for
             w_so_far += dw
         end
         resize!(sketch, to)
+        digest.watermark = length(sketch)
+        
         length(sketch) < compression || begin
             @error "Merging was ineffective" compression sketch
             throw(AssertionError("Merging was ineffective"))
         end
+
+        if sketch[begin].count > 1 || sketch[end].count > 1
+            @error "First or last centroid is too large" sketch reverseOrder digest.mergeCount
+        end
     end
+end
+
+
+md"""
+Returns the minimum sample added to a digest
+"""
+function minimum(digest::MergingDigest)
+    mergeNewValues!(digest)
+    digest.sketch[1].mean
+end
+
+
+md"""
+Returns the maximum sample added to a digest
+"""
+function maximum(digest::MergingDigest)
+    mergeNewValues!(digest)
+    digest.sketch[end].mean
 end
 
 md"""
@@ -304,49 +373,53 @@ compressing or sorting the data in the digest.
 """
 function checkWeights(digest::MergingDigest)
     if length(digest) == 0
-        return
+        return true
     end
 
     sizeof(digest.sketch) / sizeof(digest.sketch[1]) ≤ digest.maxSize ||
         throw(AssertionError("Digest sketch is oversized"))
 
-    sum(map(c->c.count, digest.sketch)) ≈ digest.totalWeight[1] ||
+    sum(map(c->c.count, digest.sketch)) ≈ digest.totalWeight ||
         throw(AssertionError("Digest has lost track of size"))
 
     if digest.logData
-        sum(map(length, digest.log)) ≈ digest.totalWeight[1] ||
+        sum(map(length, digest.log)) ≈ digest.totalWeight ||
             throw(AssertionError("Digest has lost track of samples"))
     else
         length(digest.log) == 0 ||
             throw(AssertionError("Digest has shouldn't have logged samples"))
     end
             
-    tmp = sort(digest.sketch)
+    if digest.isReversed
+        tmp = sort(reverse(digest.sketch))
+    else
+        tmp = sort(digest.sketch)
+    end
     
     (tmp[1].count == 1 && tmp[end].count == 1) ||
         @error "debug" tmp[1] tmp[end]
 
     scale = digest.scale
-    norm = normalizer(digest.scale, digest.privateCompression, digest.totalWeight[1])
+    norm = normalizer(digest.scale, digest.publicCompression, digest.totalWeight)
     q1 = 0
-    k1 = k_scale(scale, q1, norm)
-    
+    k1 = k_scale(scale, q1 / digest.totalWeight, norm)
     
     i = 0
     for c in tmp
         i += 1
-        q2 = q1 + c.count
+        q2 = q1 + c.count / digest.totalWeight
         k2 = k_scale(scale, q2, norm)
 
         c.count == 1 || k2 - k1 ≤ 1 || begin
-            @show tmp[max(1, i-3):min(end, i+3)]
-            @warn "Weight is too large" i c q1 q2 k1 k2
-            throw(AssertionError("Weight is too large $i"))
+            @show digest
+            @error "Weight is too large" i c q1 q2 k1 k2
+            throw(AssertionError("Weight is too large"))
         end
 
         q1 = q2
         k1 = k2
     end
+    return true
 end
 
 md"""
@@ -383,12 +456,19 @@ function cdf(digest::MergingDigest, x)
     else
         n = length(digest)
         min, max = first(digest.sketch).mean, last(digest.sketch).mean
-        total = digest.totalWeight[1]
+        total = digest.totalWeight
         
         if x < min
             return 0.0
         elseif x == min
-            return 0.5 / total
+            w = 0.0
+            for c in digest.sketch
+                if c.mean > x
+                    break
+                end
+                w += c.count
+            end
+            return w / 2.0 / total
         end
 
         if x > max
@@ -494,7 +574,7 @@ function quantile(digest::MergingDigest, q::Number)
     n = length(digest.sketch)
 
     # if all of the values were stored in a sorted array, index would be the offset we are interested in
-    totalWeight = digest.totalWeight[1]
+    totalWeight = digest.totalWeight
     index = q * totalWeight
 
     (digest.sketch[1].count == 1 && digest.sketch[end].count == 1) ||
@@ -581,94 +661,136 @@ function weightedAverageSorted(x1, w1, x2, w2)
 end
 
             
+md"""
+How many bytes will it take to hold this t-digest in verbose form?
 """
-    @Override
-    public int byteSize() {
-        compress();
-        # format code, compression(float), buffer-size(int), temp-size(int), #centroids-1(int),
-        # then two doubles per centroid
-        return lastUsedCell * 16 + 32;
-    }
+function byteSize(digest::MergingDigest) 
+    compress(digest)
+    # format code, compression(float), buffer-size(int), temp-size(int), #centroids-1(int),
+    # then two doubles per centroid
+    return length(digest.sketch) * 16 + 32
+end
 
-    @Override
-    public int smallByteSize() {
-        compress();
-        # format code(int), compression(float), buffer-size(short), temp-size(short), #centroids-1(short),
-        # then two floats per centroid
-        return lastUsedCell * 8 + 30;
-    }
-
-
-    @Override
-    public void asBytes(ByteBuffer buf) {
-        compress();
-        buf.putInt(Encoding.VERBOSE_ENCODING.code);
-        buf.putDouble(min);
-        buf.putDouble(max);
-        buf.putDouble(publicCompression);
-        buf.putInt(lastUsedCell);
-        for (int i = 0; i < lastUsedCell; i++) {
-            buf.putDouble(weight[i]);
-            buf.putDouble(mean[i]);
-        }
-    }
-
-    @Override
-    public void asSmallBytes(ByteBuffer buf) {
-        compress();
-        buf.putInt(Encoding.SMALL_ENCODING.code);    # 4
-        buf.putDouble(min);                          # + 8
-        buf.putDouble(max);                          # + 8
-        buf.putFloat((float) publicCompression);           # + 4
-        buf.putShort((short) mean.length);           # + 2
-        buf.putShort((short) tempMean.length);       # + 2
-        buf.putShort((short) lastUsedCell);          # + 2 = 30
-        for (int i = 0; i < lastUsedCell; i++) {
-            buf.putFloat((float) weight[i]);
-            buf.putFloat((float) mean[i]);
-        }
-    }
-
-    @SuppressWarnings("WeakerAccess")
-    public static MergingDigest fromBytes(ByteBuffer buf) {
-        int encoding = buf.getInt();
-        if (encoding == Encoding.VERBOSE_ENCODING.code) {
-            double min = buf.getDouble();
-            double max = buf.getDouble();
-            double compression = buf.getDouble();
-            int n = buf.getInt();
-            MergingDigest r = new MergingDigest(compression);
-            r.setMinMax(min, max);
-            r.lastUsedCell = n;
-            for (int i = 0; i < n; i++) {
-                r.weight[i] = buf.getDouble();
-                r.mean[i] = buf.getDouble();
-
-                r.totalWeight += r.weight[i];
-            }
-            return r;
-        } else if (encoding == Encoding.SMALL_ENCODING.code) {
-            double min = buf.getDouble();
-            double max = buf.getDouble();
-            double compression = buf.getFloat();
-            int n = buf.getShort();
-            int bufferSize = buf.getShort();
-            MergingDigest r = new MergingDigest(compression, bufferSize, n);
-            r.setMinMax(min, max);
-            r.lastUsedCell = buf.getShort();
-            for (int i = 0; i < r.lastUsedCell; i++) {
-                r.weight[i] = buf.getFloat();
-                r.mean[i] = buf.getFloat();
-
-                r.totalWeight += r.weight[i];
-            }
-            return r;
-        } else {
-            throw new IllegalStateException("Invalid format for serialized histogram");
-        }
-
-    }
+md"""
+How many bytes will it take to hold this t-digest in default form?
 """
-              
+function smallByteSize(digest::MergingDigest) 
+    compress(digest)
+    # format code(int), compression(float), buffer-size(short), temp-size(short), #centroids-1(short),
+    # then two floats per centroid
+    return length(digest.sketch) * 8 + 30;
+end
+
+
+md"""
+Reads a MergingDigest
+"""
+read(io::IO, digest::MergingDigest)  = read(io, MergingDigest{Float64, Float64})
+
+md"""
+Reads a MergingDigest
+"""
+function read(io::IO, digest::MergingDigest{T, K}) where {T, K}
+    encoding = read(io, UInt32)
+    if encoding == Encoding.VERBOSE_ENCODING.code
+        min = read(io, Float64)
+        max = read(io, Float64)
+        δ = read(io, Float64)
+        n = read(io, UInt32)
+        r = MergingDigest{T, K}(δ)
+        total = 0.0
+        if n > 0
+            push!(r.sketch, Centroid{T, K}(min, 1))
+            for i in 1:(n-2)
+                w = read(io, Float64)
+                m = read(io, Float64)
+                push!(r.sketch, Centroid{T, K}(m, w))
+                total += r.sketch[end].count
+            end
+            if n > 1
+                push!(r.sketch, Centroid{T, K}(max, 1))
+            end
+        end
+        r.totalWeight = total
+        return r
+    elseif encoding == Encoding.SMALL_ENCODING.code
+        min = read(io, Float64)
+        max = read(io, Float64)
+        δ = read(io, Float32)
+        n = read(io, UInt16)
+        tmpSize = read(io, UInt16)
+        r = MergingDigest{T, K}(compression, tmpSize - δ, true, K_3)
+        total = 0.0
+        if n > 0
+            push!(r.sketch, Centroid{T, K}(min, 1))
+            for i in 1:(n-2)
+                w = read(io, Float32)
+                m = read(io, Float32)
+                push!(r.sketch, Centroid{T, K}(m, w))
+                total += r.sketch[end].count
+            end
+            if n > 1
+                push!(r.sketch, Centroid{T, K}(max, 1))
+            end
+        end
+        r.totalWeight = total
+        return r
+    else
+        throw(AssertionError("Invalid format for serialized t-digest"))
+    end
+end
+
+function write(io::IO, digest::MergingDigest{T, K}) where {T, K}
+    if n > 1
+        digest.sketch[1].count == 1 ||
+            throw(AssertionError("First centroid weight is > 1"))
+        digest.sketch[max].count == 1 ||
+            throw(AssertionError("Last centroid weight is > 1"))
+        min = Float32(digest.sketch[1].mean)
+        max = Float32(digest.sketch[end].mean)
+    else
+        min, max = NaN, NaN
+    end
+    compress(digest)
+    write(io, Encoding.SMALL_ENCODING.code)    # 4
+    write(io, min)
+    write(io, max)
+    write(io, Float32(digest.publicCompression))
+    write(io, Int16(ceil(digest.publicCompression)))
+    write(io, Int16(ceil(digest.maxSize - digest.publicCompression)))
+    write(io, Int16(length(digest.sketch)))
+
+    for i = 2:(length(digest.sketch)-1)
+        write(io, Float32(digest.sketch[i].count))
+        write(io, Float32(digest.sketch[i].mean))
+    end
+end
+
+md"""
+Writes a t-digest using 64-bit floats
+"""
+function writeVerbose(io::IO, digest::MergingDigest{T, K}) where {T, K}
+    compress(digest)
+    write(io, Encoding.VERBOSE_ENCODING.code)
+    if n > 1
+        digest.sketch[1].count == 1 ||
+            throw(AssertionError("First centroid weight is > 1"))
+        digest.sketch[max].count == 1 ||
+            throw(AssertionError("Last centroid weight is > 1"))
+        min = Float64(digest.sketch[1].mean)
+        max = Float64(digest.sketch[end].mean)
+    else
+        min, max = NaN, NaN
+    end
+
+    write(io, min)
+    write(io, max)
+    write(io, Float64(digest.publicCompression))
+    write(io, Int32(lastUsedCell))
+    for i = 2:(length(digest.sketch)-1)
+        write(io, Float64(digest.sketch[i].count))
+        write(io, Float64(digest.sketch[i].mean))
+    end
+end
 
 end # module

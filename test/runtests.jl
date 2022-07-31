@@ -1,6 +1,9 @@
 using TDigest
 using Test
 
+include("utility.jl")
+
+include("special-cases.jl")
 
 include("basic_invariants.jl")
 

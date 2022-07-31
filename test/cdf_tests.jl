@@ -1,16 +1,7 @@
 
 @info "CDF tests"
 
-cdf_ref(data::Vector{<:Number}, x::Number) = (sum(data .< x) + sum(data .== x) / 2) / length(data)
-function quantile_ref(data::Vector{<:Number}, q::Number)
-    sort!(data)
-    if q ≤ 0
-        return data[1]
-    elseif q ≥ 1
-        return data[end]
-    end
-    return data[UInt32(ceil(q * length(data)))]
-end
+
 
 m = TDigest.MergingDigest(100)
 data = [1.0,2.0,3.0,5.0]
