@@ -45,10 +45,17 @@ julia> TDigest.quantile.(Ref(digest), [0, 0.5, 0.95, 0.99, 0.999])
   3.0941552936402497
 ```
 
-You can see the internals of the t-digest by examining the `sketch` component of the digest. Here we plot the cumulative distribution of the data summarized by our digest.
+You can see the internals of the t-digest by examining the `sketch` component of the digest. Here we plot the cumulative distribution of the data summarized by our digest and verify it is essentially identical to the theoretical distribution.
 ```julia
-```
+julia> offset_mean(x) = (x[1:end-1] + x[2:end])/2
+offset_mean (generic function with 1 method)
 
+julia> plot([-5,offset_mean(TDigest.mean.(digest.sketch))...,5], [0,cumsum(TDigest.weight.(digest.sketch))...]/1e6)
+julia> scatter!([-5,offset_mean(TDigest.mean.(digest.sketch))...,5], [0,cumsum(TDigest.weight.(digest.sketch))...]/1e6)
+julia> plot!([TDigest.mean.(digest.sketch)...], cdf(n, [mean.(digest.sketch)...]))
+julia> plot!(legend=false)
+```
+<img width="588" alt="image" src="https://user-images.githubusercontent.com/250490/182052864-c13c28aa-f04e-4101-9e94-fbd50e6f2133.png">
 
 
 # Things left to do
