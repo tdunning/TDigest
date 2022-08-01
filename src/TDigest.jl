@@ -14,41 +14,38 @@ Base.isless(a::Centroid{T, K}, b::Centroid{T, K}) where {T, K} = a.mean < b.mean
 
 include("scale.jl")
 
-md""" 
-Maintains a t-digest by collecting new points in a buffer that
-is then sorted occasionally and merged into a sorted array that
-contains previously computed centroids.
+md"""
+    MergingDigest(compression[, scaleFunction])
 
-This can be very fast because the cost of sorting and merging is
-amortized over several insertion. If we keep N centroids total and
-have the input array is k long, then the amortized cost is something
-like
+Maintains a t-digest consisting of "centroids", each of which is
+characterized by the mean of all points that have contributed to
+that centroid as well as the total number of points that have
+contributed. Points are added to centroids in such a way that centroids
+nearly the minimum and maximum values seen are kept small while
+centroids near the median value are allowed to be large.
 
-$N/k + log k$
+This is done by collecting new points in a buffer as centroids with
+unit weight and then occasionally sorting and merging old and new
+centroids while maintaining the size limits. 
 
-These costs even out when $N/k = log k$.  Balancing costs is often a
-good place to start in optimizing an algorithm.  For different values
-of compression factor, the following table shows estimated asymptotic
-values of N and suggested values of k:
+The overall t-digest is bounded in size, but can be used to approximate the
+distribution of all of the data seen so far with the approximation being
+particularly accurate near the tails.
 
-| Compression | N | k |
-| 50 | 78 | 25 |
-| 100 | 157 | 42 |
-| 200 | 314 | 73 |
-Sizing considerations for t-digest
+Adding samples can be very fast because the cost of sorting and merging is
+amortized over many insertions.
 
 The virtues of this kind of t-digest implementation include:
 
 * No allocation is required after initialization
 * The data structure automatically compresses existing centroids when possible
-* No Java object overhead is incurred for centroids since data is kept in primitive arrays
+* No dynamic allocation is necessary
 
-The current implementation takes the liberty of using ping-pong
-buffers for implementing the merge resulting in a substantial memory
-penalty, but the complexity of an in place merge was not considered as
-worthwhile since even with the overhead, the memory cost is less than
-40 bytes per centroid which is much less than half what the
-AVLTreeDigest uses and no dynamic allocation is required at all.
+The current implementation uses a single buffer to keep both
+previously merged and retained centroids together with new samples.
+
+New values are added to a digest using [`TDigest.fit!`](@ref). 
+
 """
 mutable struct MergingDigest{T<:Number, K<:Number}
     function MergingDigest{T1,K1}(public::Real, private::Real,
