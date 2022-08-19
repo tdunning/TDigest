@@ -1,5 +1,5 @@
 abstract type ScaleFunction end
-md"""
+"""
 This function defines a subtype of ScaleFunction
 and then sets up the type specialized methods for `k_scale`, `q_scale`, 
 `max_step` and `normalizer`.
@@ -35,7 +35,7 @@ end
 
 limit(f, x, x0, x1) = f(max(x0, min(x1, x)))
 
-md"Generates uniform cluster sizes. Used for comparison only."
+# "Generates uniform cluster sizes. Used for comparison only."
 defineScaleFunction(:K_0,
                     qcn_to_k = :(compression * q / 2),
                     qn_to_k = :(norm * q),
@@ -45,12 +45,12 @@ defineScaleFunction(:K_0,
                     max_qn = :(1 / norm),
                     normalizer = :(compression / 2))
 
-md"""
-Generates cluster sizes proportional to sqrt(q*(1-q)). This gives 
-constant relative accuracy if accuracy is proportional to squared 
-cluster size. It is expected that K_2 and K_3 will give better 
-practical results.
-"""
+# """
+# Generates cluster sizes proportional to sqrt(q*(1-q)). This gives 
+# constant relative accuracy if accuracy is proportional to squared 
+# cluster size. It is expected that K_2 and K_3 will give better 
+# practical results.
+# """
 defineScaleFunction(:K_1,
                     qcn_to_k = :(limit(
                         qx -> compression * asin(2 * qx - 1) / (2 * pi),
@@ -79,11 +79,11 @@ defineScaleFunction(:K_1,
                     normalizer = :(compression / (2 * pi))
                     )
 
-md"""
-Generates cluster sizes proportional to q*(1-q). This makes tail error 
-bounds tighter than for K_1. The use of a normalizing function results 
-in a strictly bounded number of clusters no matter how many samples.
-"""
+# """
+# Generates cluster sizes proportional to q*(1-q). This makes tail error 
+# bounds tighter than for K_1. The use of a normalizing function results 
+# in a strictly bounded number of clusters no matter how many samples.
+# """
 defineScaleFunction(:K_2, Z = :(4 * log(n / compression) + 24),
                     qcn_to_k = quote
                         if n <= 1
@@ -121,11 +121,11 @@ defineScaleFunction(:K_2, Z = :(4 * log(n / compression) + 24),
                     normalizer = :(compression / Z)
                     )
 
-md"""
-Generates cluster sizes proportional to min(q, 1-q). This makes tail error 
-bounds tighter than for K_1 or K_2. The use of a normalizing function 
-results in a strictly bounded number of clusters no matter how many samples.
-"""
+# """
+# Generates cluster sizes proportional to min(q, 1-q). This makes tail error 
+# bounds tighter than for K_1 or K_2. The use of a normalizing function 
+# results in a strictly bounded number of clusters no matter how many samples.
+# """
 defineScaleFunction(:K_3, Z = :(4 * log(n / compression) + 21),
                     qcn_to_k = quote
                         limit(

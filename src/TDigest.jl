@@ -1,9 +1,8 @@
 module TDigest
 
-using Markdown
 using LinearAlgebra
 
-
+include("LogHistogram.jl")
 
 struct Centroid{T, K}
     mean::T
@@ -14,7 +13,7 @@ Base.isless(a::Centroid{T, K}, b::Centroid{T, K}) where {T, K} = a.mean < b.mean
 
 include("scale.jl")
 
-md"""
+"""
     MergingDigest(compression[, scaleFunction])
 
 Maintains a t-digest consisting of "centroids", each of which is
@@ -217,7 +216,7 @@ function mergeNewValues!(digest::MergingDigest, force::Bool, compression)
     mergeNewValues!(digest, digest.sketch, digest.log, digest.watermark, force, compression)
 end
 
-md"""
+"""
 Merge the clusters of a t-digest as much as possible. This has no effect 
 if not enough data has been added since the last merge unless the merge
 is forced.
@@ -334,7 +333,7 @@ function mergeNewValues!(digest::MergingDigest, sketch::Vector, log::Vector, wat
 end
 
 
-md"""
+"""
 Returns the minimum sample added to a digest
 """
 function minimum(digest::MergingDigest)
@@ -343,7 +342,7 @@ function minimum(digest::MergingDigest)
 end
 
 
-md"""
+"""
 Returns the maximum sample added to a digest
 """
 function maximum(digest::MergingDigest)
@@ -351,7 +350,7 @@ function maximum(digest::MergingDigest)
     digest.sketch[end].mean
 end
 
-md"""
+"""
 Private function the combines two clusters
 """
 function merge(a::Centroid{T, K}, b::Centroid{T, K}) where {T, K}
@@ -364,7 +363,7 @@ function merge(a::Centroid{T, K}, b::Centroid{T, K}) where {T, K}
     end
 end
 
-md"""
+"""
 Scans a digest to verify that the digest invariant is satisfied without 
 compressing or sorting the data in the digest.
 """
@@ -419,7 +418,7 @@ function checkWeights(digest::MergingDigest)
     return true
 end
 
-md"""
+"""
 Merges any pending inputs and compresses the data down to the public setting.
 Note that this typically loses a bit of precision and thus isn't a thing to
 be doing all the time. It is best done only when we want to persist the digest.
@@ -428,7 +427,7 @@ compress(digest::MergingDigest) = mergeNewValues!(digest, true, digest.publicCom
 
 Base.length(digest::MergingDigest) = length(digest.sketch)
          
-md"""
+"""
 Approximate the value of the empirical CDF at a value of `x`.
 """
 function cdf(digest::MergingDigest, x)
@@ -658,7 +657,7 @@ function weightedAverageSorted(x1, w1, x2, w2)
 end
 
             
-md"""
+"""
 How many bytes will it take to hold this t-digest in verbose form?
 """
 function byteSize(digest::MergingDigest) 
@@ -668,7 +667,7 @@ function byteSize(digest::MergingDigest)
     return length(digest.sketch) * 16 + 32
 end
 
-md"""
+"""
 How many bytes will it take to hold this t-digest in default form?
 """
 function smallByteSize(digest::MergingDigest) 
@@ -679,12 +678,12 @@ function smallByteSize(digest::MergingDigest)
 end
 
 
-md"""
+"""
 Reads a MergingDigest
 """
 read(io::IO, digest::MergingDigest)  = read(io, MergingDigest{Float64, Float64})
 
-md"""
+"""
 Reads a MergingDigest
 """
 function read(io::IO, digest::MergingDigest{T, K}) where {T, K}
@@ -763,7 +762,7 @@ function write(io::IO, digest::MergingDigest{T, K}) where {T, K}
     end
 end
 
-md"""
+"""
 Writes a t-digest using 64-bit floats
 """
 function writeVerbose(io::IO, digest::MergingDigest{T, K}) where {T, K}

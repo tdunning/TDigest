@@ -1,4 +1,3 @@
-using Markdown
 
 cdf_ref(data::Vector{<:Number}, x::Number) = (sum(data .< x) + sum(data .== x) / 2) / length(data)
 
@@ -12,7 +11,7 @@ function quantile_ref(data::Vector, q::Number)
     return data[UInt32(1 + floor(q * length(data)))]
 end
 
-md"""
+"""
 Verify that weights are nondecreasing until we pass the median
 """
 function check_pattern(weights, median_weight)

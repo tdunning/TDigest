@@ -1,5 +1,4 @@
 using TDigest
-using Markdown
 
 begin
     @info "small digest I"
@@ -30,16 +29,16 @@ begin
 end
 
 
-md"""
-See https://github.com/tdunning/t-digest/issues/114
-
-The problem in that issue seems to have been due to adding samples with non-unit weight.
-This resulted in a violation of the t-digest invariant.
-
-The question in the issue about the origin of the shuffle still applies.
-
-testQuantile
-"""
+# """
+# See https://github.com/tdunning/t-digest/issues/114
+# 
+# The problem in that issue seems to have been due to adding samples with non-unit weight.
+# This resulted in a violation of the t-digest invariant.
+# 
+# The question in the issue about the origin of the shuffle still applies.
+# 
+# testQuantile
+# """
 begin
     @info "many repeated values and stable sorting"
     δ = 100
@@ -76,11 +75,11 @@ begin
     end
 end
 
-md"""
-Brute force test that cdf and quantile give reference behavior in digest made up of all singletons.
-
-singletonQuantiles()
-"""
+# """
+# Brute force test that cdf and quantile give reference behavior in digest made up of all singletons.
+# 
+# singletonQuantiles()
+# """
 begin
     @info "small digest III" 
     data = collect(0:19)
@@ -98,11 +97,11 @@ begin
 end
 
 
-md"""
-Verifies behavior involving interpolation (or lack of same, really) between singleton centroids.
-
-singleSingleRange()
-"""
+# """
+# Verifies behavior involving interpolation (or lack of same, really) between singleton centroids.
+# 
+# singleSingleRange()
+# """
 begin
     @info "small digest IV"
     digest = TDigest.MergingDigest(100)
@@ -122,12 +121,12 @@ begin
     @test 1.0 == TDigest.cdf(digest, 3 + 1e-10)
 end
 
-md"""
-Tests cases where min or max is not the same as the extreme centroid which has weight>1. In these cases min and
-max give us a little information we wouldn't otherwise have.
-
-singletonAtEnd()
-"""
+# """
+# Tests cases where min or max is not the same as the extreme centroid which has weight>1. In these cases min and
+# max give us a little information we wouldn't otherwise have.
+# 
+# singletonAtEnd()
+# """
 begin
     @info "singleton at end"
     digest = TDigest.MergingDigest(100)
@@ -223,9 +222,9 @@ begin
     end
 end
 
-md"""
-The example from issue https://github.com/tdunning/t-digest/issues/167
-"""
+# """
+# The example from issue https://github.com/tdunning/t-digest/issues/167
+# """
 begin
     @info "many repeated values"
     d = TDigest.MergingDigest(100)

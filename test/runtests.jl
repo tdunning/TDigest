@@ -1,6 +1,8 @@
 using TDigest
 using Test
 
+include("histogram.jl")
+
 include("utility.jl")
 
 include("special-cases.jl")
